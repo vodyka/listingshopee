@@ -215,26 +215,75 @@ app.get("/counts", async (c) => {
   }
 
   try {
-    const statuses = ["NORMAL", "UNLIST", "BANNED", "DELETED", "REVIEWING", "SOLDOUT"];
+    const statuses = ["NORMAL", "UNLIST", "BANNED", "DELETED", "REVIEWING"];
     const counts: Record<string, number> = { 
-      NORMAL: 0, 
+      NORMAL: 0,
+      SOLDOUT: 0,
       UNLIST: 0, 
       BANNED: 0, 
       DELETED: 0,
-      REVIEWING: 0,
-      SOLDOUT: 0
+      REVIEWING: 0
     };
 
     for (const integration of integrations) {
       for (const status of statuses) {
-        const resp: any = await shopeeApiRequest(
-          c.env,
-          integration,
-          "/api/v2/product/get_item_list",
-          { item_status: status, page_size: "1", offset: "0" },
-          "GET"
-        );
-        counts[status] += Number(resp?.response?.total_count || 0);
+        if (status === "NORMAL") {
+          // Para NORMAL, precisamos buscar produtos e separar por estoque
+          let offset = 0;
+          const pageSize = 100;
+          let hasMore = true;
+          let activeCount = 0;
+          let soldoutCount = 0;
+
+          while (hasMore) {
+            const resp: any = await shopeeApiRequest(
+              c.env,
+              integration,
+              "/api/v2/product/get_item_list",
+              { item_status: "NORMAL", page_size: String(pageSize), offset: String(offset) },
+              "GET"
+            );
+
+            const items = resp?.response?.item || [];
+            if (!items.length) break;
+
+            // Buscar info base para ter stock
+            const itemIds = items.map((it: any) => Number(it.item_id));
+            const baseResp: any = await shopeeApiRequest(
+              c.env,
+              integration,
+              "/api/v2/product/get_item_base_info",
+              { item_id_list: itemIds.join(",") },
+              "GET"
+            );
+
+            const baseItems = baseResp?.response?.item_list || [];
+            for (const item of baseItems) {
+              const stock = getItemStock(item);
+              if (stock > 0) {
+                activeCount++;
+              } else {
+                soldoutCount++;
+              }
+            }
+
+            offset += items.length;
+            hasMore = items.length === pageSize;
+          }
+
+          counts.NORMAL += activeCount;
+          counts.SOLDOUT += soldoutCount;
+        } else {
+          // Outros status: apenas contagem normal
+          const resp: any = await shopeeApiRequest(
+            c.env,
+            integration,
+            "/api/v2/product/get_item_list",
+            { item_status: status, page_size: "1", offset: "0" },
+            "GET"
+          );
+          counts[status] += Number(resp?.response?.total_count || 0);
+        }
       }
     }
 
